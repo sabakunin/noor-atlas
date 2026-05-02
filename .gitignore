@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Expo
+.expo/
+.expo-shared/
+dist/
+web-build/
+
+# Native
+ios/
+android/
+
+# Environment
+.env*
+!.env.example
+
+# Build artifacts
+*.ipa
+*.apk
+*.aab
+*.xcarchive
+
+# Logs
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude / AI tooling
+.claude/
+.tmp/
+
+# Local secrets / playground
+*.local

@@ -1,0 +1,74 @@
+{
+  "expo": {
+    "name": "Noor Atlas",
+    "slug": "noor-atlas",
+    "version": "1.0.0",
+    "description": "Noor Atlas is a prayer companion with prayer times, qibla direction, tasbih counter, and daily reminders.",
+    "scheme": "nooratlas",
+    "orientation": "portrait",
+    "icon": "./assets/icon-premium.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "splash": {
+      "image": "./assets/splash-premium.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#071411"
+    },
+    "updates": {
+      "fallbackToCacheTimeout": 0
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sabiratopigrok13.nooratlas",
+      "buildNumber": "1.0.0",
+      "icon": "./assets/icon-premium.png",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Allow Noor Atlas to access your location to calculate qibla direction accurately.",
+        "NSUserNotificationsUsageDescription": "Allow Noor Atlas to send you prayer reminders and test local notifications."
+      }
+    },
+    "android": {
+      "package": "com.sabiratopigrok13.nooratlas",
+      "versionCode": 1,
+      "icon": "./assets/icon-premium.png",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon-premium.png",
+        "backgroundColor": "#071411"
+      },
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "VIBRATE"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/icon-premium.png"
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Noor Atlas to access your location to calculate qibla direction."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#e6c98a",
+          "defaultChannel": "default"
+        }
+      ],
+      "expo-font",
+      "expo-audio"
+    ]
+  }
+}
