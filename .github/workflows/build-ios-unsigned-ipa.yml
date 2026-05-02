@@ -23,7 +23,10 @@ jobs:
         with:
           xcode-version: latest-stable
 
-      - name: Install dependencies
+      - name: Print Xcode version
+        run: xcodebuild -version
+
+      - name: Install JS dependencies
         run: npm ci
 
       - name: Generate native iOS project
@@ -33,7 +36,12 @@ jobs:
         working-directory: ios
         run: pod install --repo-update
 
-      - name: Resolve workspace and scheme
+      - name: Print ios/ tree
+        run: |
+          ls -la ios/
+          find ios -maxdepth 2 -type d
+
+      - name: Resolve workspace and main app target
         id: project
         shell: bash
         run: |
@@ -41,23 +49,22 @@ jobs:
           workspace="$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
           if [[ -z "$workspace" ]]; then
             echo "ERROR: No xcworkspace was generated."
-            ls -la ios/ || true
             exit 1
           fi
 
-          echo "=== xcodebuild -list output ==="
-          xcodebuild -list -workspace "$workspace"
+          echo "=== xcodebuild -list -workspace ==="
+          xcodebuild -list -workspace "$workspace" || true
+          echo "=== xcodebuild -list -workspace -json ==="
+          xcodebuild -list -workspace "$workspace" -json || true
           echo "=== end ==="
 
-          # Pick the first NON-Pods scheme (the actual app)
+          # Take first scheme that is NOT a Pods-* helper
           scheme="$(xcodebuild -list -workspace "$workspace" -json \
             | jq -r '.workspace.schemes[] | select(startswith("Pods") | not)' \
             | head -n1)"
 
-          # Fallback: if jq filter returned nothing, just take first scheme
-          if [[ -z "$scheme" ]]; then
-            scheme="$(xcodebuild -list -workspace "$workspace" -json \
-              | jq -r '.workspace.schemes[0]')"
+          if [[ -z "$scheme" || "$scheme" == "null" ]]; then
+            scheme="$(xcodebuild -list -workspace "$workspace" -json | jq -r '.workspace.schemes[0]')"
           fi
 
           if [[ -z "$scheme" || "$scheme" == "null" ]]; then
@@ -65,86 +72,69 @@ jobs:
             exit 1
           fi
 
-          echo "Detected workspace=$workspace scheme=$scheme"
+          echo "Detected workspace=$workspace"
+          echo "Detected scheme=$scheme"
           echo "workspace=$workspace" >> "$GITHUB_OUTPUT"
           echo "scheme=$scheme"       >> "$GITHUB_OUTPUT"
 
-      - name: Build unsigned .app for iphoneos
+      - name: Archive with ad-hoc signing (no real cert needed)
+        id: archive
         shell: bash
         env:
           WORKSPACE: ${{ steps.project.outputs.workspace }}
           SCHEME: ${{ steps.project.outputs.scheme }}
         run: |
           set -euo pipefail
-          derived="$RUNNER_TEMP/derived"
-          echo "Building scheme '$SCHEME' from workspace '$WORKSPACE'"
+          archive_path="$RUNNER_TEMP/App.xcarchive"
+          echo "Archiving scheme '$SCHEME' from workspace '$WORKSPACE' to $archive_path"
 
+          # CODE_SIGN_IDENTITY="-" tells Xcode to use ad-hoc signing (no real cert).
+          # This produces a complete .xcarchive with Products/Applications/*.app
+          # that Sideloadly / AltStore will resign with the user's Apple ID.
           xcodebuild \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath "$derived" \
             -destination "generic/platform=iOS" \
-            CODE_SIGNING_ALLOWED=NO \
+            -archivePath "$archive_path" \
+            CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_ENTITLEMENTS="" \
+            CODE_SIGNING_ALLOWED=YES \
             DEVELOPMENT_TEAM="" \
-            EXPANDED_CODE_SIGN_IDENTITY="" \
-            build
+            PROVISIONING_PROFILE="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            archive
 
-          echo "DERIVED=$derived" >> "$GITHUB_ENV"
+          echo "ARCHIVE_PATH=$archive_path" >> "$GITHUB_ENV"
 
-          echo "=== Build/Products tree (depth 4) ==="
-          find "$derived/Build/Products" -maxdepth 4 || true
+          echo "=== Archive tree (depth 4) ==="
+          find "$archive_path" -maxdepth 4 -type d || true
           echo "=== end ==="
 
-      - name: Locate built .app
+      - name: Locate built .app inside archive
         id: appfind
         shell: bash
-        env:
-          WORKSPACE: ${{ steps.project.outputs.workspace }}
-          SCHEME: ${{ steps.project.outputs.scheme }}
         run: |
           set -euo pipefail
+          apps_dir="$ARCHIVE_PATH/Products/Applications"
 
-          # Ask Xcode exactly where it placed the built app
-          settings="$(xcodebuild \
-            -workspace "$WORKSPACE" \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath "$DERIVED" \
-            -showBuildSettings 2>/dev/null \
-            | grep -E ' (TARGET_BUILD_DIR|WRAPPER_NAME|FULL_PRODUCT_NAME) =' || true)"
-          echo "$settings"
-
-          target_build_dir="$(echo "$settings" | awk -F' = ' '/ TARGET_BUILD_DIR /{print $2; exit}')"
-          wrapper_name="$(echo "$settings" | awk -F' = ' '/ WRAPPER_NAME /{print $2; exit}')"
-          app_path=""
-
-          if [[ -n "$target_build_dir" && -n "$wrapper_name" && -d "$target_build_dir/$wrapper_name" ]]; then
-            app_path="$target_build_dir/$wrapper_name"
-            echo "Resolved via showBuildSettings: $app_path"
-          fi
-
-          # Fallback wide search if showBuildSettings didn't pin it
-          if [[ -z "$app_path" ]]; then
-            echo "Falling back to find..."
-            app_path="$(find "$DERIVED" -type d -name '*.app' -not -path '*/Pods/*' -not -path '*/Intermediates*' -print 2>/dev/null | head -n1 || true)"
-          fi
-
-          if [[ -z "$app_path" || ! -d "$app_path" ]]; then
-            echo "ERROR: built .app bundle not found anywhere under $DERIVED"
-            echo "=== Full derived tree (.app dirs only, any depth) ==="
-            find "$DERIVED" -type d -name '*.app' || true
-            echo "=== Release-iphoneos contents ==="
-            ls -la "$DERIVED/Build/Products/Release-iphoneos" 2>/dev/null || true
+          if [[ ! -d "$apps_dir" ]]; then
+            echo "ERROR: $apps_dir does not exist after archive."
+            echo "=== Full archive tree ==="
+            find "$ARCHIVE_PATH" -maxdepth 6 || true
             exit 1
           fi
 
-          echo "Final app_path=$app_path"
+          echo "=== Apps in archive ==="
+          ls -la "$apps_dir"
+
+          app_path="$(find "$apps_dir" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          if [[ -z "$app_path" ]]; then
+            echo "ERROR: No .app inside $apps_dir"
+            exit 1
+          fi
+          echo "Found app: $app_path"
           echo "app_path=$app_path" >> "$GITHUB_OUTPUT"
 
       - name: Package unsigned IPA
@@ -160,6 +150,7 @@ jobs:
           cd "$RUNNER_TEMP"
           zip -qry NoorAtlas-unsigned.ipa Payload
           ls -lh NoorAtlas-unsigned.ipa
+          unzip -l NoorAtlas-unsigned.ipa | head -20
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
