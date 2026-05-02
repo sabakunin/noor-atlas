@@ -51,18 +51,16 @@ jobs:
 
           # Pick the first NON-Pods scheme (the actual app)
           scheme="$(xcodebuild -list -workspace "$workspace" -json \
-            | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-schemes = data.get('workspace', {}).get('schemes', [])
-app_schemes = [s for s in schemes if not s.startswith('Pods')]
-if app_schemes:
-    print(app_schemes[0])
-elif schemes:
-    print(schemes[0])
-")"
+            | jq -r '.workspace.schemes[] | select(startswith("Pods") | not)' \
+            | head -n1)"
 
+          # Fallback: if jq filter returned nothing, just take first scheme
           if [[ -z "$scheme" ]]; then
+            scheme="$(xcodebuild -list -workspace "$workspace" -json \
+              | jq -r '.workspace.schemes[0]')"
+          fi
+
+          if [[ -z "$scheme" || "$scheme" == "null" ]]; then
             echo "ERROR: Unable to determine Xcode scheme."
             exit 1
           fi
