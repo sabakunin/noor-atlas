@@ -60,13 +60,16 @@ jobs:
           echo "=== generated cert (extensions check) ==="
           openssl x509 -in cert.pem -text -noout | grep -A2 -E "Key Usage|Extended Key Usage" || true
 
-          # Pack into PKCS#12
+          # Pack into PKCS#12 with old PBE so macOS keychain accepts it.
+          # Works on both LibreSSL (no -legacy) and OpenSSL 3.x.
           openssl pkcs12 -export \
             -out cert.p12 \
             -inkey key.pem -in cert.pem \
             -password pass:certpass \
             -name "NoorAtlasSelfSign" \
-            -legacy
+            -keypbe PBE-SHA1-3DES \
+            -certpbe PBE-SHA1-3DES \
+            -macalg sha1
 
           # Create dedicated keychain
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
