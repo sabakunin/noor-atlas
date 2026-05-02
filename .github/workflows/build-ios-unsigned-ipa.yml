@@ -40,17 +40,36 @@ jobs:
           set -euo pipefail
           workspace="$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
           if [[ -z "$workspace" ]]; then
-            echo "No xcworkspace was generated."
+            echo "ERROR: No xcworkspace was generated."
+            ls -la ios/ || true
             exit 1
           fi
-          scheme="$(xcodebuild -list -workspace "$workspace" | awk '/Schemes:/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit}')"
+
+          echo "=== xcodebuild -list output ==="
+          xcodebuild -list -workspace "$workspace"
+          echo "=== end ==="
+
+          # Pick the first NON-Pods scheme (the actual app)
+          scheme="$(xcodebuild -list -workspace "$workspace" -json \
+            | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+schemes = data.get('workspace', {}).get('schemes', [])
+app_schemes = [s for s in schemes if not s.startswith('Pods')]
+if app_schemes:
+    print(app_schemes[0])
+elif schemes:
+    print(schemes[0])
+")"
+
           if [[ -z "$scheme" ]]; then
-            echo "Unable to determine Xcode scheme."
+            echo "ERROR: Unable to determine Xcode scheme."
             exit 1
           fi
+
           echo "Detected workspace=$workspace scheme=$scheme"
           echo "workspace=$workspace" >> "$GITHUB_OUTPUT"
-          echo "scheme=$scheme"    >> "$GITHUB_OUTPUT"
+          echo "scheme=$scheme"       >> "$GITHUB_OUTPUT"
 
       - name: Build unsigned .app for iphoneos
         shell: bash
@@ -60,6 +79,8 @@ jobs:
         run: |
           set -euo pipefail
           derived="$RUNNER_TEMP/derived"
+          echo "Building scheme '$SCHEME' from workspace '$WORKSPACE'"
+
           xcodebuild \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
@@ -72,25 +93,60 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
             DEVELOPMENT_TEAM="" \
-            ONLY_ACTIVE_ARCH=NO \
             EXPANDED_CODE_SIGN_IDENTITY="" \
             build
+
           echo "DERIVED=$derived" >> "$GITHUB_ENV"
+
+          echo "=== Build/Products tree (depth 4) ==="
+          find "$derived/Build/Products" -maxdepth 4 || true
+          echo "=== end ==="
 
       - name: Locate built .app
         id: appfind
         shell: bash
+        env:
+          WORKSPACE: ${{ steps.project.outputs.workspace }}
+          SCHEME: ${{ steps.project.outputs.scheme }}
         run: |
           set -euo pipefail
-          echo "Listing built products:"
-          find "$DERIVED/Build/Products" -maxdepth 3 -type d -name '*.app' || true
-          app_path="$(find "$DERIVED/Build/Products" -maxdepth 3 -type d -name '*.app' -print -quit)"
+
+          # Ask Xcode exactly where it placed the built app
+          settings="$(xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$DERIVED" \
+            -showBuildSettings 2>/dev/null \
+            | grep -E ' (TARGET_BUILD_DIR|WRAPPER_NAME|FULL_PRODUCT_NAME) =' || true)"
+          echo "$settings"
+
+          target_build_dir="$(echo "$settings" | awk -F' = ' '/ TARGET_BUILD_DIR /{print $2; exit}')"
+          wrapper_name="$(echo "$settings" | awk -F' = ' '/ WRAPPER_NAME /{print $2; exit}')"
+          app_path=""
+
+          if [[ -n "$target_build_dir" && -n "$wrapper_name" && -d "$target_build_dir/$wrapper_name" ]]; then
+            app_path="$target_build_dir/$wrapper_name"
+            echo "Resolved via showBuildSettings: $app_path"
+          fi
+
+          # Fallback wide search if showBuildSettings didn't pin it
           if [[ -z "$app_path" ]]; then
-            echo "ERROR: built .app bundle not found in $DERIVED/Build/Products"
-            ls -la "$DERIVED/Build/Products" || true
+            echo "Falling back to find..."
+            app_path="$(find "$DERIVED" -type d -name '*.app' -not -path '*/Pods/*' -not -path '*/Intermediates*' -print 2>/dev/null | head -n1 || true)"
+          fi
+
+          if [[ -z "$app_path" || ! -d "$app_path" ]]; then
+            echo "ERROR: built .app bundle not found anywhere under $DERIVED"
+            echo "=== Full derived tree (.app dirs only, any depth) ==="
+            find "$DERIVED" -type d -name '*.app' || true
+            echo "=== Release-iphoneos contents ==="
+            ls -la "$DERIVED/Build/Products/Release-iphoneos" 2>/dev/null || true
             exit 1
           fi
-          echo "app_path=$app_path"
+
+          echo "Final app_path=$app_path"
           echo "app_path=$app_path" >> "$GITHUB_OUTPUT"
 
       - name: Package unsigned IPA
