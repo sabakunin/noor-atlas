@@ -1,0 +1,94 @@
+name: Build iOS Unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios-unsigned-ipa:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate native iOS project
+        run: npx expo prebuild --platform ios --non-interactive
+
+      - name: Install CocoaPods
+        working-directory: ios
+        run: pod install
+
+      - name: Resolve workspace and scheme
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
+          if [[ -z "$workspace" ]]; then
+            echo "No xcworkspace was generated."
+            exit 1
+          fi
+          scheme="$(xcodebuild -list -workspace "$workspace" | awk '/Schemes:/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit}')"
+          if [[ -z "$scheme" ]]; then
+            echo "Unable to determine Xcode scheme."
+            exit 1
+          fi
+          echo "workspace=$workspace" >> "$GITHUB_OUTPUT"
+          echo "scheme=$scheme" >> "$GITHUB_OUTPUT"
+
+      - name: Build unsigned archive
+        shell: bash
+        env:
+          WORKSPACE: ${{ steps.project.outputs.workspace }}
+          SCHEME: ${{ steps.project.outputs.scheme }}
+        run: |
+          set -euo pipefail
+          archive_path="$RUNNER_TEMP/NoorAtlas.xcarchive"
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath "$archive_path" \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+          echo "archive_path=$archive_path" >> "$GITHUB_ENV"
+
+      - name: Package IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_path="$(find "$archive_path/Products/Applications" -maxdepth 1 -name '*.app' -print -quit)"
+          if [[ -z "$app_path" ]]; then
+            echo "Built app bundle not found in archive."
+            exit 1
+          fi
+          payload_dir="$RUNNER_TEMP/Payload"
+          mkdir -p "$payload_dir"
+          cp -R "$app_path" "$payload_dir/"
+          cd "$RUNNER_TEMP"
+          zip -qry NoorAtlas-unsigned.ipa Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoorAtlas-unsigned-ipa
+          path: ${{ runner.temp }}/NoorAtlas-unsigned.ipa
+          if-no-files-found: error
