@@ -18,24 +18,30 @@ npx expo start --tunnel
 
 Open the project in Expo Go on iPhone or Android and scan the QR code.
 
-## Build unsigned iOS IPA with GitHub Actions
+## Build unsigned iOS IPA with Bitrise (recommended)
 
-This repository now includes the workflow `.github/workflows/build-ios-unsigned-ipa.yml`.
+This repository ships with `bitrise.yml` configured for an unsigned iOS build.
 
-1. Push the project to a private GitHub repository.
-2. Open the repository on GitHub.
-3. Go to `Actions`.
-4. Select `Build iOS Unsigned IPA`.
-5. Click `Run workflow`.
-6. Wait for the macOS job to finish.
-7. Download the artifact `NoorAtlas-unsigned-ipa`.
-8. Extract the zip archive. Inside it will be `NoorAtlas-unsigned.ipa`.
+1. Sign in to <https://app.bitrise.io> with your GitHub account.
+2. Click `Add new app`, pick this GitHub repository, accept `I need to do manual configuration` if Bitrise asks how to configure.
+3. Bitrise detects the bundled `bitrise.yml` automatically.
+4. On `Stack & Machine`, the config already pins `osx-xcode-16.4.x-sequoia`. Leave the default.
+5. Open the `Workflows` tab, select `build-unsigned-ipa`, click `Start build`.
+6. Wait for the macOS job to finish. The first run is ≈ 15 minutes, rebuilds are faster thanks to the npm and CocoaPods caches.
+7. Open the finished build, scroll to `Apps & Artifacts`, download `NoorAtlas-unsigned.ipa`.
 
 Notes:
 
-- The workflow generates native iOS files with `expo prebuild`, installs CocoaPods, builds an unsigned archive, and packages it into an `ipa`.
-- If the Actions tab is empty, make sure the branch with the workflow file has already been pushed to GitHub.
-- If the build fails, open the failed run and inspect the step logs. The most likely causes are dependency drift or a native module that needs extra iOS setup.
+- The workflow runs `expo prebuild`, installs CocoaPods, builds an unsigned `.app`, strips signature artefacts, zips it as `Payload/NoorAtlas.app` into `NoorAtlas-unsigned.ipa`, and uploads the IPA plus the full `xcodebuild.log`.
+- The free Bitrise tier gives ≈ 200 build minutes per month, enough for several rebuilds.
+
+## Build unsigned iOS IPA with GitHub Actions (alternative)
+
+The repo also includes `.github/workflows/build-ios-unsigned-ipa.yml`.
+
+1. Open the repository on GitHub, go to `Actions`.
+2. Select `Build iOS Unsigned IPA`, click `Run workflow`.
+3. After the macOS job finishes, download the artifact `NoorAtlas-unsigned-ipa` and extract `NoorAtlas-unsigned.ipa` from it.
 
 ## Install on iPhone with Sideloadly
 

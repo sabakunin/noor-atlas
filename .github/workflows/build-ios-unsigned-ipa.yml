@@ -52,19 +52,49 @@ jobs:
             exit 1
           fi
 
+          ws_base="$(basename "$workspace" .xcworkspace)"
+          echo "Workspace basename: $ws_base"
+
           echo "=== xcodebuild -list ==="
           xcodebuild -list -workspace "$workspace" || true
 
+          # Prefer scheme whose name matches the workspace (e.g. NoorAtlas).
           scheme="$(xcodebuild -list -workspace "$workspace" -json \
-            | jq -r '.workspace.schemes[] | select(startswith("Pods") | not)' \
+            | jq -r --arg n "$ws_base" '.workspace.schemes[] | select(. == $n)' \
             | head -n1)"
 
+          # Fallback: also check the .xcodeproj target list for a project-defined app target.
           if [[ -z "$scheme" || "$scheme" == "null" ]]; then
-            scheme="$(xcodebuild -list -workspace "$workspace" -json | jq -r '.workspace.schemes[0]')"
+            project="ios/${ws_base}.xcodeproj"
+            if [[ -d "$project" ]]; then
+              scheme="$(xcodebuild -list -project "$project" -json \
+                | jq -r --arg n "$ws_base" '.project.targets[] | select(. == $n)' \
+                | head -n1)"
+            fi
+          fi
+
+          # Last-resort fallback: any scheme that is not Pods-* and not a known library prefix.
+          if [[ -z "$scheme" || "$scheme" == "null" ]]; then
+            scheme="$(xcodebuild -list -workspace "$workspace" -json \
+              | jq -r '.workspace.schemes[]
+                  | select(startswith("Pods") | not)
+                  | select(startswith("React") | not)
+                  | select(startswith("RCT") | not)
+                  | select(startswith("RN") | not)
+                  | select(startswith("Expo") | not)
+                  | select(startswith("EX") | not)
+                  | select(startswith("FB") | not)
+                  | select(. != "Yoga")
+                  | select(. != "hermes-engine")
+                  | select(. != "ReactCommon")
+                  | select(. != "ReactCodegen")
+                  | select(. != "ReactAppDependencyProvider")
+                  | select(. != "ReactNativeDependencies")' \
+              | head -n1)"
           fi
 
           if [[ -z "$scheme" || "$scheme" == "null" ]]; then
-            echo "ERROR: Unable to determine Xcode scheme."
+            echo "ERROR: Unable to determine main app Xcode scheme."
             exit 1
           fi
 

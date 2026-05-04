@@ -1,0 +1,225 @@
+format_version: '13'
+default_step_lib_source: https://github.com/bitrise-io/bitrise-steplib.git
+project_type: react-native
+
+app:
+  envs:
+  - APP_NAME: NoorAtlas
+  - BUNDLE_ID: com.sabiratopigrok13.nooratlas
+  - IPA_NAME: NoorAtlas-unsigned.ipa
+
+trigger_map:
+- push_branch: main
+  workflow: build-unsigned-ipa
+
+workflows:
+  build-unsigned-ipa:
+    description: |
+      Builds an unsigned iOS .app from this Expo / React Native project and
+      packages it into an .ipa that can be re-signed with Sideloadly or
+      AltStore using a free Apple ID.
+    steps:
+
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+
+    - git-clone@8: {}
+
+    - script@1:
+        title: Print toolchain versions
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -euxo pipefail
+            sw_vers
+            xcodebuild -version
+            node -v
+            npm -v
+            pod --version || true
+
+    - restore-npm-cache@1: {}
+
+    - npm@1:
+        title: npm ci
+        inputs:
+        - command: ci
+
+    - save-npm-cache@1: {}
+
+    - script@1:
+        title: Expo prebuild iOS
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -euxo pipefail
+            cd "$BITRISE_SOURCE_DIR"
+            npx expo prebuild --platform ios --non-interactive --no-install
+            ls -la ios/
+            find ios -maxdepth 2 -type d
+
+    - restore-cocoapods-cache@1: {}
+
+    - cocoapods-install@2:
+        inputs:
+        - source_root_path: $BITRISE_SOURCE_DIR/ios
+        - is_cache_disabled: 'false'
+
+    - save-cocoapods-cache@1: {}
+
+    - script@1:
+        title: Resolve workspace and main app scheme
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -euxo pipefail
+            cd "$BITRISE_SOURCE_DIR"
+
+            workspace="$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
+            if [[ -z "$workspace" ]]; then
+              echo "ERROR: No xcworkspace found"; exit 1
+            fi
+
+            ws_base="$(basename "$workspace" .xcworkspace)"
+            echo "Workspace: $workspace, base: $ws_base"
+
+            echo "=== xcodebuild -list ==="
+            xcodebuild -list -workspace "$workspace" || true
+
+            # Prefer scheme that matches the workspace name (e.g. NoorAtlas).
+            scheme="$(xcodebuild -list -workspace "$workspace" -json \
+              | jq -r --arg n "$ws_base" '.workspace.schemes[] | select(. == $n)' \
+              | head -n1)"
+
+            # Fallback to the matching target inside .xcodeproj.
+            if [[ -z "$scheme" || "$scheme" == "null" ]]; then
+              project="ios/${ws_base}.xcodeproj"
+              if [[ -d "$project" ]]; then
+                scheme="$(xcodebuild -list -project "$project" -json \
+                  | jq -r --arg n "$ws_base" '.project.targets[] | select(. == $n)' \
+                  | head -n1)"
+              fi
+            fi
+
+            # Last resort: any non-Pods, non-library scheme.
+            if [[ -z "$scheme" || "$scheme" == "null" ]]; then
+              scheme="$(xcodebuild -list -workspace "$workspace" -json \
+                | jq -r '.workspace.schemes[]
+                    | select(startswith("Pods") | not)
+                    | select(startswith("React") | not)
+                    | select(startswith("RCT") | not)
+                    | select(startswith("RN") | not)
+                    | select(startswith("Expo") | not)
+                    | select(startswith("EX") | not)
+                    | select(startswith("FB") | not)
+                    | select(. != "Yoga")
+                    | select(. != "hermes-engine")
+                    | select(. != "ReactCommon")
+                    | select(. != "ReactCodegen")
+                    | select(. != "ReactAppDependencyProvider")
+                    | select(. != "ReactNativeDependencies")' \
+                | head -n1)"
+            fi
+
+            if [[ -z "$scheme" || "$scheme" == "null" ]]; then
+              echo "ERROR: Unable to determine main app Xcode scheme"; exit 1
+            fi
+
+            echo "Detected workspace=$workspace scheme=$scheme"
+            envman add --key XC_WORKSPACE --value "$workspace"
+            envman add --key XC_SCHEME    --value "$scheme"
+
+    - script@1:
+        title: Build unsigned .app for iphoneos
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -euxo pipefail
+            cd "$BITRISE_SOURCE_DIR"
+
+            derived="$BITRISE_SOURCE_DIR/derived"
+            cfg="$BITRISE_SOURCE_DIR/unsigned.xcconfig"
+
+            cat > "$cfg" <<'EOF'
+            CODE_SIGN_IDENTITY =
+            CODE_SIGNING_REQUIRED = NO
+            CODE_SIGNING_ALLOWED = NO
+            EOF
+
+            echo "=== unsigned.xcconfig ==="
+            cat "$cfg"
+
+            xcodebuild \
+              -workspace "$XC_WORKSPACE" \
+              -scheme "$XC_SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              -derivedDataPath "$derived" \
+              -destination "generic/platform=iOS" \
+              -xcconfig "$cfg" \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGNING_ALLOWED=NO \
+              build \
+              2>&1 | tee "$BITRISE_DEPLOY_DIR/xcodebuild.log" | tail -200
+
+            echo "=== Build/Products tree ==="
+            find "$derived/Build/Products" -maxdepth 5 -type d || true
+            envman add --key DERIVED --value "$derived"
+
+    - script@1:
+        title: Locate .app and package unsigned IPA
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -euxo pipefail
+            cd "$BITRISE_SOURCE_DIR"
+
+            app_path="$(find "$DERIVED/Build/Products" -maxdepth 4 -type d -name '*.app' \
+              -not -path '*/Pods/*' -not -path '*/Intermediates*' -print -quit 2>/dev/null || true)"
+
+            if [[ -z "$app_path" ]]; then
+              app_path="$(find "$DERIVED" -type d -name '*.app' \
+                -not -path '*/Pods/*' -not -path '*/Intermediates*' -print -quit 2>/dev/null || true)"
+            fi
+
+            if [[ -z "$app_path" || ! -d "$app_path" ]]; then
+              echo "ERROR: no .app found under $DERIVED"
+              find "$DERIVED" -type d -name '*.app' || true
+              ls -la "$DERIVED/Build/Products/Release-iphoneos" 2>/dev/null || true
+              exit 1
+            fi
+
+            echo "Found app: $app_path"
+
+            # Strip residual signature artefacts so Sideloadly / AltStore can re-sign cleanly.
+            rm -rf "$app_path/_CodeSignature" || true
+            rm -f  "$app_path/embedded.mobileprovision" || true
+            if [[ -d "$app_path/Frameworks" ]]; then
+              for fw in "$app_path"/Frameworks/*.framework; do
+                [[ -d "$fw" ]] || continue
+                rm -rf "$fw/_CodeSignature" || true
+              done
+            fi
+
+            payload_dir="$BITRISE_DEPLOY_DIR/Payload"
+            rm -rf "$payload_dir"
+            mkdir -p "$payload_dir"
+            cp -R "$app_path" "$payload_dir/"
+
+            cd "$BITRISE_DEPLOY_DIR"
+            zip -qry "$IPA_NAME" Payload
+            ls -lh "$IPA_NAME"
+            unzip -l "$IPA_NAME" | head -25
+
+            envman add --key BITRISE_IPA_PATH --value "$BITRISE_DEPLOY_DIR/$IPA_NAME"
+
+    - deploy-to-bitrise-io@2:
+        inputs:
+        - deploy_path: $BITRISE_DEPLOY_DIR
+        - is_compress: 'false'
+        - notify_user_groups: none
+
+meta:
+  bitrise.io:
+    stack: osx-xcode-16.4.x-sequoia
+    machine_type_id: g2.mac.large
