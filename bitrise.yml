@@ -26,6 +26,22 @@ workflows:
     - git-clone@8: {}
 
     - script@1:
+        title: Install Node 20.19.4 via nvm
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -euxo pipefail
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            nvm install 20.19.4
+            nvm alias default 20.19.4
+            nvm use 20.19.4
+            node -v
+            npm -v
+            # Persist node bin on PATH for the rest of the workflow.
+            envman add --key PATH --value "$(dirname "$(which node)"):$PATH"
+
+    - script@1:
         title: Print toolchain versions
         inputs:
         - content: |-
@@ -39,10 +55,15 @@ workflows:
 
     - restore-npm-cache@1: {}
 
-    - npm@1:
+    - script@1:
         title: npm ci
         inputs:
-        - command: ci
+        - content: |-
+            #!/usr/bin/env bash
+            set -euxo pipefail
+            cd "$BITRISE_SOURCE_DIR"
+            node -v
+            npm ci
 
     - save-npm-cache@1: {}
 
